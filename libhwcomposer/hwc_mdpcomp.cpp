@@ -237,7 +237,7 @@ void MDPComp::FrameInfo::reset(const int& numLayers) {
     fbCount = numLayers;
     mdpCount = 0;
     needsRedraw = true;
-    fbZ = 0;
+    fbZ = -1;
 }
 
 void MDPComp::FrameInfo::map() {
@@ -423,8 +423,8 @@ bool MDPComp::isFrameDoable(hwc_context_t *ctx) {
                   __FUNCTION__);
         ret = false;
     } else if(ctx->isPaddingRound) {
-        ctx->isPaddingRound = false;
-        ALOGD_IF(isDebug(), "%s: padding round",__FUNCTION__);
+        ALOGD_IF(isDebug(), "%s: padding round invoked for dpy %d",
+                 __FUNCTION__,mDpy);
         ret = false;
     }
     return ret;
@@ -634,7 +634,6 @@ bool MDPComp::fullMDPComp(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
     }
 
     mCurrentFrame.fbCount = 0;
-    mCurrentFrame.fbZ = -1;
     memcpy(&mCurrentFrame.isFBComposed, &mCurrentFrame.drop,
            sizeof(mCurrentFrame.isFBComposed));
     mCurrentFrame.mdpCount = mCurrentFrame.layerCount - mCurrentFrame.fbCount -
@@ -1015,14 +1014,14 @@ bool  MDPComp::markLayersForCaching(hwc_context_t* ctx,
     int maxBatchCount = 0;
     int fbZ = -1;
 
-    /* All or Nothing is cached. No batching needed */
-    if(!mCurrentFrame.fbCount) {
-        mCurrentFrame.fbZ = -1;
+    /* Nothing is cached. No batching needed */
+    if(mCurrentFrame.fbCount == 0) {
         return true;
     }
-    if(!mCurrentFrame.mdpCount) {
-        mCurrentFrame.fbZ = 0;
-        return true;
+
+    /* No MDP comp layers, try to use other comp modes */
+    if(mCurrentFrame.mdpCount == 0) {
+        return false;
     }
 
     fbZ = getBatch(list, maxBatchStart, maxBatchEnd, maxBatchCount);
@@ -1259,11 +1258,10 @@ int MDPComp::prepare(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
     const int numLayers = ctx->listStats[mDpy].numAppLayers;
     MDPVersion& mdpVersion = qdutils::MDPVersion::getInstance();
 
-    //number of app layers exceeds MAX_NUM_APP_LAYERS fall back to GPU
-    //do not cache the information for next draw cycle.
-    if(numLayers > MAX_NUM_APP_LAYERS) {
-        ALOGI("%s: Number of App layers exceeded the limit ",
-        __FUNCTION__);
+    //Do not cache the information for next draw cycle.
+    if(numLayers > MAX_NUM_APP_LAYERS or (!numLayers)) {
+        ALOGI("%s: Unsupported layer count for mdp composition",
+                __FUNCTION__);
         mCachedFrame.reset();
         return -1;
     }

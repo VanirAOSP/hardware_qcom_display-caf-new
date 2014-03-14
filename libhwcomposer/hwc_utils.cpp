@@ -214,6 +214,10 @@ void initContext(hwc_context_t *ctx)
         ctx->dpyAttr[i].mAsHeightRatio = 0;
     }
 
+    for (uint32_t i = 0; i < HWC_NUM_DISPLAY_TYPES; i++) {
+        ctx->mPrevHwLayerCount[i] = 0;
+    }
+
     MDPComp::init(ctx);
     ctx->mAD = new AssertiveDisplay(ctx);
 
@@ -898,6 +902,7 @@ void setListStats(hwc_context_t *ctx,
     if(prevYuvCount != ctx->listStats[dpy].yuvCount) {
         ctx->mVideoTransFlag = true;
     }
+
     if(dpy == HWC_DISPLAY_PRIMARY) {
         ctx->mAD->markDoable(ctx, list);
     }
@@ -1034,10 +1039,10 @@ void calculate_crop_rects(hwc_rect_t& crop, hwc_rect_t& dst,
     }
 
     calc_cut(leftCutRatio, topCutRatio, rightCutRatio, bottomCutRatio, orient);
-    crop_l += crop_w * leftCutRatio;
-    crop_t += crop_h * topCutRatio;
-    crop_r -= crop_w * rightCutRatio;
-    crop_b -= crop_h * bottomCutRatio;
+    crop_l += (int)round((double)crop_w * leftCutRatio);
+    crop_t += (int)round((double)crop_h * topCutRatio);
+    crop_r -= (int)round((double)crop_w * rightCutRatio);
+    crop_b -= (int)round((double)crop_h * bottomCutRatio);
 }
 
 bool areLayersIntersecting(const hwc_layer_1_t* layer1,
@@ -1256,15 +1261,14 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
         }
     }
 
-    //Accumulate acquireFenceFds for MDP
+    //Accumulate acquireFenceFds for MDP Overlays
     if(list->outbufAcquireFenceFd >= 0) {
         //Writeback output buffer
         acquireFd[count++] = list->outbufAcquireFenceFd;
     }
 
     for(uint32_t i = 0; i < list->numHwLayers; i++) {
-        if((list->hwLayers[i].compositionType == HWC_OVERLAY  ||
-                        list->hwLayers[i].compositionType == HWC_BLIT) &&
+        if(list->hwLayers[i].compositionType == HWC_OVERLAY &&
                         list->hwLayers[i].acquireFenceFd >= 0) {
             if(UNLIKELY(swapzero))
                 acquireFd[count++] = -1;
@@ -1320,7 +1324,13 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
                     !(layerProp[i].mFlags & HWC_VPUCOMP)) {
                 //If rotator has not already populated this field
                 // & if it's a not VPU layer
-                list->hwLayers[i].releaseFenceFd = dup(releaseFd);
+                if(list->hwLayers[i].compositionType == HWC_BLIT) {
+                    //For Blit, the app layers should be released when the Blit is
+                    //complete. This fd was passed from copybit->draw
+                    list->hwLayers[i].releaseFenceFd = dup(fd);
+                } else {
+                    list->hwLayers[i].releaseFenceFd = dup(releaseFd);
+                }
             }
         }
     }
