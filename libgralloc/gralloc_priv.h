@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,13 +60,8 @@ enum {
     /* Buffer content should be displayed on an external display only */
     GRALLOC_USAGE_PRIVATE_EXTERNAL_ONLY   =       0x08000000,
 
-    /* Only this buffer content should be displayed on external, even if
-     * other EXTERNAL_ONLY buffers are available. Used during suspend.
-     */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_BLOCK  =       0x00100000,
-
-    /* Close Caption displayed on an external display only */
-    GRALLOC_USAGE_PRIVATE_EXTERNAL_CC     =       0x00200000,
+    /* This flag is set for WFD usecase */
+    GRALLOC_USAGE_PRIVATE_WFD             =       0x00200000,
 
     /* CAMERA heap is a carveout heap for camera, is not secured*/
     GRALLOC_USAGE_PRIVATE_CAMERA_HEAP     =       0x00400000,
@@ -84,7 +79,9 @@ enum {
     // libraries
     GRALLOC_MODULE_PERFORM_GET_STRIDE,
     GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_FROM_HANDLE,
+    GRALLOC_MODULE_PERFORM_GET_CUSTOM_STRIDE_AND_HEIGHT_FROM_HANDLE,
     GRALLOC_MODULE_PERFORM_GET_ATTRIBUTES,
+    GRALLOC_MODULE_PERFORM_GET_COLOR_SPACE_FROM_HANDLE,
 };
 
 #define GRALLOC_HEAP_MASK   (GRALLOC_USAGE_PRIVATE_UI_CONTIG_HEAP |\
@@ -194,10 +191,6 @@ struct private_handle_t : public native_handle {
             PRIV_FLAGS_NOT_MAPPED         = 0x00001000,
             // Display on external only
             PRIV_FLAGS_EXTERNAL_ONLY      = 0x00002000,
-            // Display only this buffer on external
-            PRIV_FLAGS_EXTERNAL_BLOCK     = 0x00004000,
-            // Display this buffer on external as close caption
-            PRIV_FLAGS_EXTERNAL_CC        = 0x00008000,
             PRIV_FLAGS_VIDEO_ENCODER      = 0x00010000,
             PRIV_FLAGS_CAMERA_WRITE       = 0x00020000,
             PRIV_FLAGS_CAMERA_READ        = 0x00040000,
@@ -217,33 +210,35 @@ struct private_handle_t : public native_handle {
         // ints
         int     magic;
         int     flags;
-        int     size;
-        int     offset;
+        size_t  size;
+        size_t  offset;
         int     bufferType;
-        int     base;
-        int     offset_metadata;
+        uintptr_t base;
+        size_t  offset_metadata;
         // The gpu address mapped into the mmu.
-        int     gpuaddr;
+        uintptr_t gpuaddr;
         int     format;
         int     width;
         int     height;
-        int     base_metadata;
+        uintptr_t base_metadata;
 
 #ifdef __cplusplus
-        static const int sNumInts = 12;
+        //TODO64: Revisit this on 64-bit
+        static const int sNumInts = (6 + (3 * (sizeof(size_t)/sizeof(int))) +
+                                    (3 * (sizeof(uintptr_t)/sizeof(int))));
         static const int sNumFds = 2;
         static const int sMagic = 'gmsm';
 
-        private_handle_t(int fd, int size, int flags, int bufferType,
-                         int format,int width, int height, int eFd = -1,
-                         int eOffset = 0, int eBase = 0) :
+        private_handle_t(int fd, size_t size, int flags, int bufferType,
+                         int format, int width, int height, int eFd = -1,
+                         size_t eOffset = 0, uintptr_t eBase = 0) :
             fd(fd), fd_metadata(eFd), magic(sMagic),
             flags(flags), size(size), offset(0), bufferType(bufferType),
             base(0), offset_metadata(eOffset), gpuaddr(0),
             format(format), width(width), height(height),
             base_metadata(eBase)
         {
-            version = sizeof(native_handle);
+            version = (int) sizeof(native_handle);
             numInts = sNumInts;
             numFds = sNumFds;
         }
@@ -262,7 +257,8 @@ struct private_handle_t : public native_handle {
                 hnd->magic != sMagic)
             {
                 ALOGD("Invalid gralloc handle (at %p): "
-                      "ver(%d/%d) ints(%d/%d) fds(%d/%d) magic(%c%c%c%c/%c%c%c%c)",
+                      "ver(%d/%zu) ints(%d/%d) fds(%d/%d)"
+                      "magic(%c%c%c%c/%c%c%c%c)",
                       h,
                       h ? h->version : -1, sizeof(native_handle),
                       h ? h->numInts : -1, sNumInts,

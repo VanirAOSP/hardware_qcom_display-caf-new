@@ -272,9 +272,6 @@ enum eMdpFlags {
     OV_MDSS_MDP_BWC_EN = MDP_BWC_EN,
     OV_MDSS_MDP_DUAL_PIPE = MDSS_MDP_DUAL_PIPE,
     OV_MDP_SOLID_FILL = MDP_SOLID_FILL,
-#ifdef VPU_TARGET
-    OV_MDP_VPU_PIPE = MDP_VPU_PIPE,
-#endif
 };
 
 enum eZorder {
@@ -557,6 +554,9 @@ inline const char* getFormatString(int format){
     formats[MDP_XRGB_8888_TILE] = STR(MDP_XRGB_8888_TILE);
     formats[MDP_XBGR_8888_TILE] = STR(MDP_XBGR_8888_TILE);
     formats[MDP_BGRX_8888_TILE] = STR(MDP_BGRX_8888_TILE);
+#ifdef MDP_RGB_565_TILE
+    formats[MDP_RGB_565_TILE] = STR(MDP_RGB_565_TILE);
+#endif
     formats[MDP_IMGTYPE_LIMIT] = STR(MDP_IMGTYPE_LIMIT);
 
     if(format < 0 || format >= MDP_IMGTYPE_LIMIT) {

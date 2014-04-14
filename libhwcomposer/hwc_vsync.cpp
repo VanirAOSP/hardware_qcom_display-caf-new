@@ -63,7 +63,7 @@ static void handle_vsync_event(hwc_context_t* ctx, int dpy, char *data)
         timestamp = strtoull(data + strlen("VSYNC="), NULL, 0);
     }
     // send timestamp to SurfaceFlinger
-    ALOGD_IF (logvsync, "%s: timestamp %llu sent to SF for dpy=%d",
+    ALOGD_IF (logvsync, "%s: timestamp %"PRIu64" sent to SF for dpy=%d",
             __FUNCTION__, timestamp, dpy);
     ctx->proc->vsync(ctx->proc, dpy, timestamp);
 }
@@ -156,8 +156,8 @@ static void *vsync_loop(void *param)
                 for (int dpy = HWC_DISPLAY_PRIMARY; dpy < num_displays; dpy++) {
                     for(size_t ev = 0; ev < num_events; ev++) {
                         if (pfd[dpy][ev].revents & POLLPRI) {
-                            err = pread(pfd[dpy][ev].fd, vdata, MAX_DATA, 0);
-                            if (UNLIKELY(err < 0)) {
+                            ssize_t len = pread(pfd[dpy][ev].fd, vdata, MAX_DATA, 0);
+                            if (UNLIKELY(len < 0)) {
                                 // If the read was just interrupted - it is not
                                 // a fatal error. Just continue in this case
                                 ALOGE ("%s: Unable to read event:%zu for \

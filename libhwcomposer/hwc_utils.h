@@ -30,6 +30,8 @@
 #include <utils/String8.h>
 #include "qdMetaData.h"
 #include <overlayUtils.h>
+#include <EGL/egl.h>
+
 
 #define ALIGN_TO(x, align)     (((x) + ((align)-1)) & ~((align)-1))
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
@@ -60,7 +62,6 @@ class MDPComp;
 class CopyBit;
 class HwcDebug;
 class AssertiveDisplay;
-class VPUClient;
 class HWCVirtualBase;
 
 
@@ -145,14 +146,12 @@ struct BwcPM {
 enum {
     HWC_MDPCOMP = 0x00000001,
     HWC_COPYBIT = 0x00000002,
-    HWC_VPUCOMP = 0x00000004,
 };
 
 // HAL specific features
 enum {
     HWC_COLOR_FILL = 0x00000008,
     HWC_FORMAT_RB_SWAP = 0x00000040,
-    HWC_VPU_PIPE = 0x00000200,
 };
 
 class LayerRotMap {
@@ -190,7 +189,7 @@ inline overlay::Rotator* LayerRotMap::getRot(uint32_t index) const {
 }
 
 inline hwc_rect_t integerizeSourceCrop(const hwc_frect_t& cropF) {
-    hwc_rect_t cropI = {0};
+    hwc_rect_t cropI = {0,0,0,0};
     cropI.left = int(ceilf(cropF.left));
     cropI.top = int(ceilf(cropF.top));
     cropI.right = int(floorf(cropF.right));
@@ -211,6 +210,11 @@ inline bool isNonIntegralSourceCrop(const hwc_frect_t& cropF) {
 // -----------------------------------------------------------------------------
 // Utility functions - implemented in hwc_utils.cpp
 void dumpLayer(hwc_layer_1_t const* l);
+
+// Calculate viewframe for external/primary display from primary resolution and
+// primary device orientation
+hwc_rect_t calculateDisplayViewFrame(hwc_context_t *ctx, int dpy);
+
 void setListStats(hwc_context_t *ctx, hwc_display_contents_1_t *list,
         int dpy);
 void initContext(hwc_context_t *ctx);
@@ -256,9 +260,6 @@ bool isActionSafePresent(hwc_context_t *ctx, int dpy);
 
 /* Calculates the destination position based on the action safe rectangle */
 void getActionSafePosition(hwc_context_t *ctx, int dpy, hwc_rect_t& dst);
-
-void getAspectRatioPosition(int destWidth, int destHeight, int srcWidth,
-                                int srcHeight, hwc_rect_t& rect);
 
 void getAspectRatioPosition(hwc_context_t* ctx, int dpy, int extOrientation,
                                 hwc_rect_t& inRect, hwc_rect_t& outRect);
@@ -342,6 +343,12 @@ int getLeftSplit(hwc_context_t *ctx, const int& dpy);
 
 bool isDisplaySplit(hwc_context_t* ctx, int dpy);
 
+// Set the GPU hint flag to high for MIXED/GPU composition only for
+// first frame after MDP to GPU/MIXED mode transition.
+// Set the GPU hint to default if the current composition type is GPU
+// due to idle fallback or MDP composition.
+void setGPUHint(hwc_context_t* ctx, hwc_display_contents_1_t* list);
+
 // Inline utility functions
 static inline bool isSkipLayer(const hwc_layer_1_t* l) {
     return (UNLIKELY(l && (l->flags & HWC_SKIP_LAYER)));
@@ -375,16 +382,6 @@ static inline bool isBufferLocked(const private_handle_t* hnd) {
 //Return true if buffer is for external display only
 static inline bool isExtOnly(const private_handle_t* hnd) {
     return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_EXTERNAL_ONLY));
-}
-
-//Return true if buffer is for external display only with a BLOCK flag.
-static inline bool isExtBlock(const private_handle_t* hnd) {
-    return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_EXTERNAL_BLOCK));
-}
-
-//Return true if buffer is for external display only with a Close Caption flag.
-static inline bool isExtCC(const private_handle_t* hnd) {
-    return (hnd && (hnd->flags & private_handle_t::PRIV_FLAGS_EXTERNAL_CC));
 }
 
 //Return true if the buffer is intended for Secure Display
@@ -450,6 +447,20 @@ enum eAnimationState{
     ANIMATION_STARTED,
 };
 
+// Structure holds the information about the GPU hint.
+struct gpu_hint_info {
+    // system level flag to enable gpu_perf_mode
+    bool mGpuPerfModeEnable;
+    // Stores the current GPU performance mode DEFAULT/HIGH
+    bool mCurrGPUPerfMode;
+    // true if previous composition used GPU
+    bool mPrevCompositionGLES;
+    // Stores the EGLContext of current process
+    EGLContext mEGLContext;
+    // Stores the EGLDisplay of current process
+    EGLDisplay mEGLDisplay;
+};
+
 // -----------------------------------------------------------------------------
 // HWC context
 // This structure contains overall state
@@ -479,7 +490,6 @@ struct hwc_context_t {
     qhwc::HwcDebug *mHwcDebug[HWC_NUM_DISPLAY_TYPES];
     hwc_rect_t mViewFrame[HWC_NUM_DISPLAY_TYPES];
     qhwc::AssertiveDisplay *mAD;
-    qhwc::VPUClient *mVPUClient;
     eAnimationState mAnimationState[HWC_NUM_DISPLAY_TYPES];
     qhwc::HWCVirtualBase *mHWCVirtual;
 
@@ -511,6 +521,10 @@ struct hwc_context_t {
     bool mPanelResetStatus;
     // number of active Displays
     int numActiveDisplays;
+    // Downscale feature switch, set via system the property
+    // sys.hwc.mdp_downscale_enabled
+    bool mMDPDownscaleEnabled;
+    struct gpu_hint_info mGPUHintInfo;
 };
 
 namespace qhwc {

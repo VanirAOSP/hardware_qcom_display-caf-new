@@ -42,7 +42,8 @@ inline size_t roundUpToPageSize(size_t x) {
     return (x + (PAGE_SIZE-1)) & ~(PAGE_SIZE-1);
 }
 
-inline size_t ALIGN(size_t x, size_t align) {
+template <class Type>
+inline Type ALIGN(Type x, Type align) {
     return (x + align-1) & ~(align-1);
 }
 
@@ -120,12 +121,12 @@ class AdrenoMemInfo : public android::Singleton <AdrenoMemInfo>
         // Pointer to the padding library.
         void *libadreno_utils;
 
-        // link to the surface padding library.
+        // link(s)to adreno surface padding library.
         int (*LINK_adreno_compute_padding) (int width, int bpp,
                                                 int surface_tile_height,
                                                 int screen_tile_height,
                                                 int padding_threshold);
-        // link to the surface padding library.
+
         void (*LINK_adreno_compute_aligned_width_and_height) (int width,
                                                 int height,
                                                 int bpp,
@@ -134,8 +135,18 @@ class AdrenoMemInfo : public android::Singleton <AdrenoMemInfo>
                                                 int padding_threshold,
                                                 int *aligned_w,
                                                 int *aligned_h);
-        // link to the surface padding library.
+
         int (*LINK_adreno_isMacroTilingSupportedByGpu) (void);
 
+        void(*LINK_adreno_compute_compressedfmt_aligned_width_and_height)(
+                                                int width,
+                                                int height,
+                                                int format,
+                                                int tile_mode,
+                                                int raster_mode,
+                                                int padding_threshold,
+                                                int *aligned_w,
+                                                int *aligned_h,
+                                                int *bpp);
 };
 #endif /* GR_H_ */
