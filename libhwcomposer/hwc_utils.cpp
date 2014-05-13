@@ -52,6 +52,7 @@ using namespace overlay;
 using namespace overlay::utils;
 namespace ovutils = overlay::utils;
 
+#ifdef QCOM_BSP
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -71,6 +72,7 @@ EGLAPI EGLBoolean eglGpuPerfHintQCOM(EGLDisplay dpy, EGLContext ctx,
 #ifdef __cplusplus
 }
 #endif
+#endif
 
 namespace qhwc {
 
@@ -83,20 +85,19 @@ bool isValidResolution(hwc_context_t *ctx, uint32_t xres, uint32_t yres)
 
 void changeResolution(hwc_context_t *ctx, int xres_orig, int yres_orig) {
     //Store original display resolution.
-    ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres_orig = xres_orig;
-    ctx->dpyAttr[HWC_DISPLAY_PRIMARY].yres_orig = yres_orig;
+    ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres_new = xres_orig;
+    ctx->dpyAttr[HWC_DISPLAY_PRIMARY].yres_new = yres_orig;
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].customFBSize = false;
-
     char property[PROPERTY_VALUE_MAX] = {'\0'};
     char *yptr = NULL;
     if (property_get("debug.hwc.fbsize", property, NULL) > 0) {
         yptr = strcasestr(property,"x");
-        int xres = atoi(property);
-        int yres = atoi(yptr + 1);
-        if (isValidResolution(ctx,xres,yres) &&
-                 xres != xres_orig && yres != yres_orig) {
-            ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres = xres;
-            ctx->dpyAttr[HWC_DISPLAY_PRIMARY].yres = yres;
+        int xres_new = atoi(property);
+        int yres_new = atoi(yptr + 1);
+        if (isValidResolution(ctx,xres_new,yres_new) &&
+                 xres_new != xres_orig && yres_new != yres_orig) {
+            ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres_new = xres_new;
+            ctx->dpyAttr[HWC_DISPLAY_PRIMARY].yres_new = yres_new;
             ctx->dpyAttr[HWC_DISPLAY_PRIMARY].customFBSize = true;
         }
     }
@@ -182,6 +183,7 @@ static int openFramebufferDevice(hwc_context_t *ctx)
 void initContext(hwc_context_t *ctx)
 {
     openFramebufferDevice(ctx);
+    char value[PROPERTY_VALUE_MAX];
     ctx->mMDP.version = qdutils::MDPVersion::getInstance().getMDPVersion();
     ctx->mMDP.hasOverlay = qdutils::MDPVersion::getInstance().hasOverlay();
     ctx->mMDP.panel = qdutils::MDPVersion::getInstance().getPanelType();
@@ -223,7 +225,14 @@ void initContext(hwc_context_t *ctx)
     ctx->mMDPComp[HWC_DISPLAY_PRIMARY] =
          MDPComp::getObject(ctx, HWC_DISPLAY_PRIMARY);
     ctx->dpyAttr[HWC_DISPLAY_PRIMARY].connected = true;
-    ctx->mHWCVirtual = HWCVirtualBase::getObject();
+
+    ctx->mVDSEnabled = false;
+    if((property_get("persist.hwc.enable_vds", value, NULL) > 0)) {
+        if(atoi(value) != 0) {
+            ctx->mVDSEnabled = true;
+        }
+    }
+    ctx->mHWCVirtual = HWCVirtualBase::getObject(ctx->mVDSEnabled);
 
     for (uint32_t i = 0; i < HWC_NUM_DISPLAY_TYPES; i++) {
         ctx->mHwcDebug[i] = new HwcDebug(i);
@@ -260,7 +269,6 @@ void initContext(hwc_context_t *ctx)
 
     // Read the system property to determine if downscale feature is enabled.
     ctx->mMDPDownscaleEnabled = false;
-    char value[PROPERTY_VALUE_MAX];
     if(property_get("sys.hwc.mdp_downscale_enabled", value, "false")
             && !strcmp(value, "true")) {
         ctx->mMDPDownscaleEnabled = true;
@@ -268,13 +276,14 @@ void initContext(hwc_context_t *ctx)
 
     // Initialize gpu perfomance hint related parameters
     property_get("sys.hwc.gpu_perf_mode", value, "0");
+#ifdef QCOM_BSP
     ctx->mGPUHintInfo.mGpuPerfModeEnable = atoi(value)? true : false;
 
     ctx->mGPUHintInfo.mEGLDisplay = NULL;
     ctx->mGPUHintInfo.mEGLContext = NULL;
     ctx->mGPUHintInfo.mPrevCompositionGLES = false;
     ctx->mGPUHintInfo.mCurrGPUPerfMode = EGL_GPU_LEVEL_0;
-
+#endif
     ALOGI("Initializing Qualcomm Hardware Composer");
     ALOGI("MDP version: %d", ctx->mMDP.version);
 }
@@ -559,7 +568,7 @@ void calcExtDisplayPosition(hwc_context_t *ctx,
                                ovutils::eTransform& orient) {
     // Swap width and height when there is a 90deg transform
     int extOrient = getExtOrientation(ctx);
-    if(dpy && !qdutils::MDPVersion::getInstance().is8x26()) {
+    if(dpy && ctx->mOverlay->isUIScalingOnExternalSupported()) {
         if(!isYuvBuffer(hnd)) {
             if(extOrient & HWC_TRANSFORM_ROT_90) {
                 int dstWidth = ctx->dpyAttr[dpy].xres;
@@ -637,6 +646,21 @@ int getMirrorModeOrientation(hwc_context_t *ctx) {
          extOrientation = HWC_TRANSFORM_FLIP_V | HWC_TRANSFORM_FLIP_H;
 
     return extOrientation;
+}
+
+/* Get External State names */
+const char* getExternalDisplayState(uint32_t external_state) {
+    static const char* externalStates[EXTERNAL_MAXSTATES] = {0};
+    externalStates[EXTERNAL_OFFLINE] = STR(EXTERNAL_OFFLINE);
+    externalStates[EXTERNAL_ONLINE]  = STR(EXTERNAL_ONLINE);
+    externalStates[EXTERNAL_PAUSE]   = STR(EXTERNAL_PAUSE);
+    externalStates[EXTERNAL_RESUME]  = STR(EXTERNAL_RESUME);
+
+    if(external_state >= EXTERNAL_MAXSTATES) {
+        return "EXTERNAL_INVALID";
+    }
+
+    return externalStates[external_state];
 }
 
 bool isDownscaleRequired(hwc_layer_1_t const* layer) {
@@ -817,12 +841,12 @@ void setListStats(hwc_context_t *ctx,
     ctx->mViewFrame[dpy] = (hwc_rect_t){0, 0, 0, 0};
     ctx->dpyAttr[dpy].mActionSafePresent = isActionSafePresent(ctx, dpy);
 
-    trimList(ctx, list, dpy);
-    optimizeLayerRects(list);
-
     // Calculate view frame of ext display from primary resolution
     // and primary device orientation.
     ctx->mViewFrame[dpy] = calculateDisplayViewFrame(ctx, dpy);
+
+    trimList(ctx, list, dpy);
+    optimizeLayerRects(list);
 
     for (size_t i = 0; i < (size_t)ctx->listStats[dpy].numAppLayers; i++) {
         hwc_layer_1_t const* layer = &list->hwLayers[i];
@@ -1049,6 +1073,13 @@ bool areLayersIntersecting(const hwc_layer_1_t* layer1,
 bool isValidRect(const hwc_rect& rect)
 {
    return ((rect.bottom > rect.top) && (rect.right > rect.left)) ;
+}
+
+bool operator ==(const hwc_rect_t& lhs, const hwc_rect_t& rhs) {
+    if(lhs.left == rhs.left && lhs.top == rhs.top &&
+       lhs.right == rhs.right &&  lhs.bottom == rhs.bottom )
+          return true ;
+    return false;
 }
 
 /* computes the intersection of two rects */
@@ -1310,7 +1341,9 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
 
     for(uint32_t i = 0; i < list->numHwLayers; i++) {
         if(list->hwLayers[i].compositionType == HWC_OVERLAY ||
+#ifdef QCOM_BSP
            list->hwLayers[i].compositionType == HWC_BLIT ||
+#endif
            list->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
             //Populate releaseFenceFds.
             if(UNLIKELY(swapzero)) {
@@ -1320,12 +1353,15 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
                 // if animation is in progress.
                 list->hwLayers[i].releaseFenceFd = -1;
             } else if(list->hwLayers[i].releaseFenceFd < 0 ) {
+#ifdef QCOM_BSP
                 //If rotator has not already populated this field
                 if(list->hwLayers[i].compositionType == HWC_BLIT) {
                     //For Blit, the app layers should be released when the Blit is
                     //complete. This fd was passed from copybit->draw
                     list->hwLayers[i].releaseFenceFd = dup(fd);
-                } else {
+                } else
+#endif
+                {
                     list->hwLayers[i].releaseFenceFd = dup(releaseFd);
                 }
             }
@@ -1911,10 +1947,10 @@ int configureSourceSplit(hwc_context_t *ctx, hwc_layer_1_t *layer,
 }
 
 bool canUseRotator(hwc_context_t *ctx, int dpy) {
-    if(qdutils::MDPVersion::getInstance().is8x26() &&
+    if(ctx->mOverlay->isDMAMultiplexingSupported() &&
             isSecondaryConnected(ctx) &&
             !ctx->dpyAttr[HWC_DISPLAY_VIRTUAL].isPause) {
-        /* 8x26 mdss driver supports multiplexing of DMA pipe
+        /* mdss driver on certain targets support multiplexing of DMA pipe
          * in LINE and BLOCK modes for writeback panels.
          */
         if(dpy == HWC_DISPLAY_PRIMARY)
@@ -1996,8 +2032,10 @@ bool isGLESComp(hwc_context_t *ctx,
 
 void setGPUHint(hwc_context_t* ctx, hwc_display_contents_1_t* list) {
     struct gpu_hint_info *gpuHint = &ctx->mGPUHintInfo;
-    if(!gpuHint->mGpuPerfModeEnable)
+    if(!gpuHint->mGpuPerfModeEnable || !ctx || !list)
         return;
+
+#ifdef QCOM_BSP
     /* Set the GPU hint flag to high for MIXED/GPU composition only for
        first frame after MDP -> GPU/MIXED mode transition. Set the GPU
        hint to default if the previous composition is GPU or current GPU
@@ -2053,6 +2091,7 @@ void setGPUHint(hwc_context_t* ctx, hwc_display_contents_1_t* list) {
         }
         gpuHint->mPrevCompositionGLES = false;
     }
+#endif
 }
 
 void BwcPM::setBwc(const hwc_rect_t& crop,

@@ -393,44 +393,14 @@ bool MDPComp::isValidDimension(hwc_context_t *ctx, hwc_layer_1_t *layer) {
     return true;
 }
 
-ovutils::eDest MDPComp::getMdpPipe(hwc_context_t *ctx, ePipeType type,
-        int mixer) {
-    overlay::Overlay& ov = *ctx->mOverlay;
-    ovutils::eDest mdp_pipe = ovutils::OV_INVALID;
-
-    switch(type) {
-    case MDPCOMP_OV_DMA:
-        mdp_pipe = ov.nextPipe(ovutils::OV_MDP_PIPE_DMA, mDpy, mixer);
-        if(mdp_pipe != ovutils::OV_INVALID) {
-            return mdp_pipe;
-        }
-    case MDPCOMP_OV_ANY:
-    case MDPCOMP_OV_RGB:
-        mdp_pipe = ov.nextPipe(ovutils::OV_MDP_PIPE_RGB, mDpy, mixer);
-        if(mdp_pipe != ovutils::OV_INVALID) {
-            return mdp_pipe;
-        }
-
-        if(type == MDPCOMP_OV_RGB) {
-            //Requested only for RGB pipe
-            break;
-        }
-    case  MDPCOMP_OV_VG:
-        return ov.nextPipe(ovutils::OV_MDP_PIPE_VG, mDpy, mixer);
-    default:
-        ALOGE("%s: Invalid pipe type",__FUNCTION__);
-        return ovutils::OV_INVALID;
-    };
-    return ovutils::OV_INVALID;
-}
-
 bool MDPComp::isFrameDoable(hwc_context_t *ctx) {
     bool ret = true;
 
     if(!isEnabled()) {
         ALOGD_IF(isDebug(),"%s: MDP Comp. not enabled.", __FUNCTION__);
         ret = false;
-    } else if(qdutils::MDPVersion::getInstance().is8x26() &&
+    } else if((qdutils::MDPVersion::getInstance().is8x26() ||
+               qdutils::MDPVersion::getInstance().is8x16()) &&
             ctx->mVideoTransFlag &&
             isSecondaryConnected(ctx)) {
         //1 Padding round to shift pipes across mixers
@@ -644,15 +614,6 @@ bool MDPComp::fullMDPComp(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
             ALOGD_IF(isDebug(), "%s: Unsupported layer in list",__FUNCTION__);
             return false;
         }
-
-        //For 8x26, if there is only one layer which needs scale for secondary
-        //while no scale for primary display, DMA pipe is occupied by primary.
-        //If need to fall back to GLES composition, virtual display lacks DMA
-        //pipe and error is reported.
-        if(qdutils::MDPVersion::getInstance().is8x26() &&
-                                mDpy >= HWC_DISPLAY_EXTERNAL &&
-                                qhwc::needsScaling(layer))
-            return false;
     }
 
     mCurrentFrame.fbCount = 0;
@@ -1345,18 +1306,23 @@ bool MDPComp::allocSplitVGPipesfor4k2k(hwc_context_t *ctx, int index) {
     info.pipeInfo = new MdpYUVPipeInfo;
     info.rot = NULL;
     MdpYUVPipeInfo& pipe_info = *(MdpYUVPipeInfo*)info.pipeInfo;
-    ePipeType type =  MDPCOMP_OV_VG;
 
     pipe_info.lIndex = ovutils::OV_INVALID;
     pipe_info.rIndex = ovutils::OV_INVALID;
 
-    pipe_info.lIndex = getMdpPipe(ctx, type, Overlay::MIXER_DEFAULT);
+    Overlay::PipeSpecs pipeSpecs;
+    pipeSpecs.formatClass = Overlay::FORMAT_YUV;
+    pipeSpecs.needsScaling = true;
+    pipeSpecs.dpy = mDpy;
+    pipeSpecs.fb = false;
+
+    pipe_info.lIndex = ctx->mOverlay->getPipe(pipeSpecs);
     if(pipe_info.lIndex == ovutils::OV_INVALID){
         bRet = false;
         ALOGD_IF(isDebug(),"%s: allocating first VG pipe failed",
                 __FUNCTION__);
     }
-    pipe_info.rIndex = getMdpPipe(ctx, type, Overlay::MIXER_DEFAULT);
+    pipe_info.rIndex = ctx->mOverlay->getPipe(pipeSpecs);
     if(pipe_info.rIndex == ovutils::OV_INVALID){
         bRet = false;
         ALOGD_IF(isDebug(),"%s: allocating second VG pipe failed",
@@ -1426,28 +1392,21 @@ bool MDPCompNonSplit::allocLayerPipes(hwc_context_t *ctx,
         info.pipeInfo = new MdpPipeInfoNonSplit;
         info.rot = NULL;
         MdpPipeInfoNonSplit& pipe_info = *(MdpPipeInfoNonSplit*)info.pipeInfo;
-        ePipeType type = MDPCOMP_OV_ANY;
 
-        if(isYuvBuffer(hnd)) {
-            type = MDPCOMP_OV_VG;
-        } else if(qdutils::MDPVersion::getInstance().is8x26() &&
-                (ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres > 1024)) {
-            if(qhwc::needsScaling(layer))
-                type = MDPCOMP_OV_RGB;
-        } else if(!qhwc::needsScaling(layer)
-            && Overlay::getDMAMode() != Overlay::DMA_BLOCK_MODE
-            && ctx->mMDP.version >= qdutils::MDSS_V5) {
-            type = MDPCOMP_OV_DMA;
-        } else if(qhwc::needsScaling(layer) &&
-                !(ctx->listStats[mDpy].yuvCount) &&
-                ! qdutils::MDPVersion::getInstance().isRGBScalarSupported()){
-            type = MDPCOMP_OV_VG;
-        }
+        Overlay::PipeSpecs pipeSpecs;
+        pipeSpecs.formatClass = isYuvBuffer(hnd) ?
+                Overlay::FORMAT_YUV : Overlay::FORMAT_RGB;
+        pipeSpecs.needsScaling = qhwc::needsScaling(layer) or
+                (qdutils::MDPVersion::getInstance().is8x26() and
+                ctx->dpyAttr[HWC_DISPLAY_PRIMARY].xres > 1024);
+        pipeSpecs.dpy = mDpy;
+        pipeSpecs.fb = false;
+        pipeSpecs.numActiveDisplays = ctx->numActiveDisplays;
 
-        pipe_info.index = getMdpPipe(ctx, type, Overlay::MIXER_DEFAULT);
+        pipe_info.index = ctx->mOverlay->getPipe(pipeSpecs);
+
         if(pipe_info.index == ovutils::OV_INVALID) {
-            ALOGD_IF(isDebug(), "%s: Unable to get pipe type = %d",
-                __FUNCTION__, (int) type);
+            ALOGD_IF(isDebug(), "%s: Unable to get pipe", __FUNCTION__);
             return false;
         }
     }
@@ -1610,22 +1569,31 @@ void MDPCompSplit::adjustForSourceSplit(hwc_context_t *ctx,
 }
 
 bool MDPCompSplit::acquireMDPPipes(hwc_context_t *ctx, hwc_layer_1_t* layer,
-        MdpPipeInfoSplit& pipe_info,
-        ePipeType type) {
-    const int lSplit = getLeftSplit(ctx, mDpy);
+        MdpPipeInfoSplit& pipe_info) {
 
+    const int lSplit = getLeftSplit(ctx, mDpy);
+    private_handle_t *hnd = (private_handle_t *)layer->handle;
     hwc_rect_t dst = layer->displayFrame;
     pipe_info.lIndex = ovutils::OV_INVALID;
     pipe_info.rIndex = ovutils::OV_INVALID;
 
+    Overlay::PipeSpecs pipeSpecs;
+    pipeSpecs.formatClass = isYuvBuffer(hnd) ?
+            Overlay::FORMAT_YUV : Overlay::FORMAT_RGB;
+    pipeSpecs.needsScaling = qhwc::needsScalingWithSplit(ctx, layer, mDpy);
+    pipeSpecs.dpy = mDpy;
+    pipeSpecs.mixer = Overlay::MIXER_LEFT;
+    pipeSpecs.fb = false;
+
     if (dst.left < lSplit) {
-        pipe_info.lIndex = getMdpPipe(ctx, type, Overlay::MIXER_LEFT);
+        pipe_info.lIndex = ctx->mOverlay->getPipe(pipeSpecs);
         if(pipe_info.lIndex == ovutils::OV_INVALID)
             return false;
     }
 
     if(dst.right > lSplit) {
-        pipe_info.rIndex = getMdpPipe(ctx, type, Overlay::MIXER_RIGHT);
+        pipeSpecs.mixer = Overlay::MIXER_RIGHT;
+        pipe_info.rIndex = ctx->mOverlay->getPipe(pipeSpecs);
         if(pipe_info.rIndex == ovutils::OV_INVALID)
             return false;
     }
@@ -1655,19 +1623,10 @@ bool MDPCompSplit::allocLayerPipes(hwc_context_t *ctx,
         info.pipeInfo = new MdpPipeInfoSplit;
         info.rot = NULL;
         MdpPipeInfoSplit& pipe_info = *(MdpPipeInfoSplit*)info.pipeInfo;
-        ePipeType type = MDPCOMP_OV_ANY;
 
-        if(isYuvBuffer(hnd)) {
-            type = MDPCOMP_OV_VG;
-        } else if(!qhwc::needsScalingWithSplit(ctx, layer, mDpy)
-            && Overlay::getDMAMode() != Overlay::DMA_BLOCK_MODE
-            && ctx->mMDP.version >= qdutils::MDSS_V5) {
-            type = MDPCOMP_OV_DMA;
-        }
-
-        if(!acquireMDPPipes(ctx, layer, pipe_info, type)) {
-            ALOGD_IF(isDebug(), "%s: Unable to get pipe for type = %d",
-                    __FUNCTION__, (int) type);
+        if(!acquireMDPPipes(ctx, layer, pipe_info)) {
+            ALOGD_IF(isDebug(), "%s: Unable to get pipe for type",
+                    __FUNCTION__);
             return false;
         }
     }
@@ -1851,7 +1810,7 @@ bool MDPCompSplit::draw(hwc_context_t *ctx, hwc_display_contents_1_t* list) {
 
 //================MDPCompSrcSplit==============================================
 bool MDPCompSrcSplit::acquireMDPPipes(hwc_context_t *ctx, hwc_layer_1_t* layer,
-        MdpPipeInfoSplit& pipe_info, ePipeType type) {
+        MdpPipeInfoSplit& pipe_info) {
     private_handle_t *hnd = (private_handle_t *)layer->handle;
     hwc_rect_t dst = layer->displayFrame;
     hwc_rect_t crop = integerizeSourceCrop(layer->sourceCropf);
@@ -1862,32 +1821,25 @@ bool MDPCompSrcSplit::acquireMDPPipes(hwc_context_t *ctx, hwc_layer_1_t* layer,
     //should have a higher priority than the right one. Pipe priorities are
     //starting with VG0, VG1 ... , RGB0 ..., DMA1
 
+    Overlay::PipeSpecs pipeSpecs;
+    pipeSpecs.formatClass = isYuvBuffer(hnd) ?
+            Overlay::FORMAT_YUV : Overlay::FORMAT_RGB;
+    pipeSpecs.needsScaling = qhwc::needsScaling(layer);
+    pipeSpecs.dpy = mDpy;
+    pipeSpecs.fb = false;
+
     //1 pipe by default for a layer
-    pipe_info.lIndex = getMdpPipe(ctx, type, Overlay::MIXER_DEFAULT);
+    pipe_info.lIndex = ctx->mOverlay->getPipe(pipeSpecs);
     if(pipe_info.lIndex == ovutils::OV_INVALID) {
-        if(isYuvBuffer(hnd)) {
-            return false;
-        }
-        pipe_info.lIndex = getMdpPipe(ctx, MDPCOMP_OV_ANY,
-                Overlay::MIXER_DEFAULT);
-        if(pipe_info.lIndex == ovutils::OV_INVALID) {
-            return false;
-        }
+        return false;
     }
 
     //If layer's crop width or dest width > 2048, use 2 pipes
     if((dst.right - dst.left) > qdutils::MAX_DISPLAY_DIM or
             (crop.right - crop.left) > qdutils::MAX_DISPLAY_DIM) {
-        pipe_info.rIndex = getMdpPipe(ctx, type, Overlay::MIXER_DEFAULT);
+        pipe_info.rIndex = ctx->mOverlay->getPipe(pipeSpecs);
         if(pipe_info.rIndex == ovutils::OV_INVALID) {
-            if(isYuvBuffer(hnd)) {
-                return false;
-            }
-            pipe_info.rIndex = getMdpPipe(ctx, MDPCOMP_OV_ANY,
-                    Overlay::MIXER_DEFAULT);
-            if(pipe_info.rIndex == ovutils::OV_INVALID) {
-                return false;
-            }
+            return false;
         }
 
         // Return values
@@ -1938,13 +1890,12 @@ int MDPCompSrcSplit::configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
             whf.format = getMdpFormat(HAL_PIXEL_FORMAT_BGRX_8888);
     }
 
-    eMdpFlags mdpFlagsL = OV_MDP_BACKEND_COMPOSITION;
-    setMdpFlags(layer, mdpFlagsL, 0, transform);
-    eMdpFlags mdpFlagsR = mdpFlagsL;
+    eMdpFlags mdpFlags = OV_MDP_BACKEND_COMPOSITION;
+    setMdpFlags(layer, mdpFlags, 0, transform);
 
     if(lDest != OV_INVALID && rDest != OV_INVALID) {
         //Enable overfetch
-        setMdpFlags(mdpFlagsL, OV_MDSS_MDP_DUAL_PIPE);
+        setMdpFlags(mdpFlags, OV_MDSS_MDP_DUAL_PIPE);
     }
 
     if(isYuvBuffer(hnd) && (transform & HWC_TRANSFORM_ROT_90)) {
@@ -1952,7 +1903,7 @@ int MDPCompSrcSplit::configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
         if((*rot) == NULL) return -1;
         ctx->mLayerRotMap[mDpy]->add(layer, *rot);
         //Configure rotator for pre-rotation
-        if(configRotator(*rot, whf, crop, mdpFlagsL, orient, downscale) < 0) {
+        if(configRotator(*rot, whf, crop, mdpFlags, orient, downscale) < 0) {
             ALOGE("%s: configRotator failed!", __FUNCTION__);
             return -1;
         }
@@ -1988,7 +1939,7 @@ int MDPCompSrcSplit::configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
 
     //configure left pipe
     if(lDest != OV_INVALID) {
-        PipeArgs pargL(mdpFlagsL, whf, z, isFg,
+        PipeArgs pargL(mdpFlags, whf, z, isFg,
                 static_cast<eRotFlags>(rotFlags), layer->planeAlpha,
                 (ovutils::eBlending) getBlending(layer->blending));
 
@@ -2001,7 +1952,7 @@ int MDPCompSrcSplit::configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
 
     //configure right pipe
     if(rDest != OV_INVALID) {
-        PipeArgs pargR(mdpFlagsR, whf, z, isFg,
+        PipeArgs pargR(mdpFlags, whf, z, isFg,
                 static_cast<eRotFlags>(rotFlags),
                 layer->planeAlpha,
                 (ovutils::eBlending) getBlending(layer->blending));

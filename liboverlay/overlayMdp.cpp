@@ -35,13 +35,6 @@ static inline bool isEqual(float f1, float f2) {
         return ((int)(f1*100) == (int)(f2*100)) ? true : false;
 }
 
-#ifdef ANDROID_JELLYBEAN_MR1
-//Since this is unavailable on Android 4.2.2, defining it in terms of base 10
-static inline float log2f(const float& x) {
-    return log(x) / log(2);
-}
-#endif
-
 namespace ovutils = overlay::utils;
 namespace overlay {
 
@@ -194,6 +187,10 @@ bool MdpCtrl::set() {
             if (!(mOVInfo.flags & MDP_SOURCE_ROTATED_90) &&
                 (mOVInfo.src_rect.h % 4))
                 mOVInfo.src_rect.h = utils::aligndown(mOVInfo.src_rect.h, 4);
+            // For interlaced, width must be multiple of 4 when rotated 90deg.
+            else if ((mOVInfo.flags & MDP_SOURCE_ROTATED_90) &&
+                (mOVInfo.src_rect.w % 4))
+                mOVInfo.src_rect.w = utils::aligndown(mOVInfo.src_rect.w, 4);
         }
     } else {
         if (mdpVersion >= MDSS_V5) {
@@ -382,7 +379,8 @@ bool MdpCtrl::validateAndSet(MdpCtrl* mdpCtrlArray[], const int& count,
 #endif
 
     if(!mdp_wrapper::validateAndSet(fbFd, list)) {
-        if(list.processed_overlays < list.num_overlays) {
+        /* No dump for failure due to insufficient resource */
+        if(errno != E2BIG) {
             mdp_wrapper::dump("Bad ov dump: ",
                 *list.overlay_list[list.processed_overlays]);
         }
