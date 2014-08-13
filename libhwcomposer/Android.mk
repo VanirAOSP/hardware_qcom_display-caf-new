@@ -12,8 +12,14 @@ LOCAL_SHARED_LIBRARIES        := $(common_libs) libEGL liboverlay \
                                  libexternal libqdutils libhardware_legacy \
                                  libdl libmemalloc libqservice libsync \
                                  libbinder libmedia libskia libvirtual
-LOCAL_CFLAGS                  := $(common_flags) -DLOG_TAG=\"qdhwcomposer\" \
-                                 -Wno-error=sizeof-pointer-memaccess                    
+LOCAL_CFLAGS                  := $(common_flags) -DLOG_TAG=\"qdhwcomposer\"
+
+# GCC 4.8 needs this, and it doesn't exist on 4.7
+ifneq ($(filter 4.8 4.8.% 4.9 4.9.%, $(shell $(TARGET_CC) --version)),)
+LOCAL_CFLAGS                  += \
+                                 -Wno-error=sizeof-pointer-memaccess
+endif
+
 LOCAL_ADDITIONAL_DEPENDENCIES := $(common_deps)
 LOCAL_SRC_FILES               := hwc.cpp          \
                                  hwc_utils.cpp    \
