@@ -241,11 +241,12 @@ void MDPComp::setRedraw(hwc_context_t *ctx,
 }
 
 MDPComp::FrameInfo::FrameInfo() {
+    memset(&mdpToLayer, 0, sizeof(mdpToLayer));
     reset(0);
 }
 
 void MDPComp::FrameInfo::reset(const int& numLayers) {
-    for(int i = 0 ; i < MAX_PIPES_PER_MIXER && numLayers; i++ ) {
+    for(int i = 0; i < MAX_PIPES_PER_MIXER; i++) {
         if(mdpToLayer[i].pipeInfo) {
             delete mdpToLayer[i].pipeInfo;
             mdpToLayer[i].pipeInfo = NULL;
@@ -2372,14 +2373,24 @@ int MDPCompSrcSplit::configure(hwc_context_t *ctx, hwc_layer_1_t *layer,
         cropR.left = cropL.right;
         sanitizeSourceCrop(cropL, cropR, hnd);
 
+        bool cropSwap = false;
         //Swap crops on H flip since 2 pipes are being used
         if((orient & OVERLAY_TRANSFORM_FLIP_H) && (*rot) == NULL) {
             hwc_rect_t tmp = cropL;
             cropL = cropR;
             cropR = tmp;
+            cropSwap = true;
         }
 
-        dstL.right = (dst.right + dst.left) / 2;
+        //cropSwap trick: If the src and dst widths are both odd, let us say
+        //2507, then splitting both into half would cause left width to be 1253
+        //and right 1254. If crop is swapped because of H flip, this will cause
+        //left crop width to be 1254, whereas left dst width remains 1253, thus
+        //inducing a scaling that is unaccounted for. To overcome that we add 1
+        //to the dst width if there is a cropSwap. So if the original width was
+        //2507, the left dst width will be 1254. Even if the original width was
+        //even for ex: 2508, the left dst width will still remain 1254.
+        dstL.right = (dst.right + dst.left + cropSwap) / 2;
         dstR.left = dstL.right;
     }
 
